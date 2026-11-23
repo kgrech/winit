@@ -377,12 +377,6 @@ impl AppState {
                 self.set_state(AppStateImpl::Waiting { waiting_handler, start });
                 self.waker.stop()
             },
-            (ControlFlow::WaitUntil(old_instant), ControlFlow::WaitUntil(new_instant))
-                if old_instant == new_instant =>
-            {
-                let start = Instant::now();
-                self.set_state(AppStateImpl::Waiting { waiting_handler, start });
-            },
             (_, ControlFlow::Wait) => {
                 let start = Instant::now();
                 self.set_state(AppStateImpl::Waiting { waiting_handler, start });
@@ -796,13 +790,17 @@ impl EventLoopWaker {
     fn new(rl: CFRunLoopRef) -> EventLoopWaker {
         extern "C" fn wakeup_main_loop(_timer: CFRunLoopTimerRef, _info: *mut c_void) {}
         unsafe {
-            // Create a timer with a 0.1µs interval (1ns does not work) to mimic polling.
-            // It is initially setup with a first fire time really far into the
-            // future, but that gets changed to fire immediately in did_finish_launching
+            // Wakeups are scheduled explicitly by start/start_at, including every Poll
+            // iteration and repeated WaitUntil deadlines. Keep the timer repeating so
+            // CoreFoundation does not invalidate it after firing, but do not use a tiny
+            // repeat interval: after suspension CF advances an overdue repeating timer
+            // one interval at a time, blocking the main thread for seconds.
+            // One day is only a fallback interval, not the event-loop wakeup latency.
+            // did_finish_launching schedules the initially parked timer immediately.
             let timer = CFRunLoopTimerCreate(
                 ptr::null_mut(),
                 f64::MAX,
-                0.000_000_1,
+                86_400.0,
                 0,
                 0,
                 wakeup_main_loop,
